@@ -58,6 +58,12 @@ def config_dict():
 
     return output
 
+def get_db():
+    """ Returns DICT containing MongoDB Settings
+    """
+    # Probably needs some validation before
+    return config_dict()['db']
+
 
 def get_valid_emails():
     """Get iterator for valid email patterns for this instance.

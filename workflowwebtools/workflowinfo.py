@@ -9,12 +9,16 @@ import re
 import json
 import time
 import datetime
+import sys
 
 from collections import defaultdict
 from functools import wraps
+from pymongo import MongoClient
+
 
 from cmstoolbox.webtools import get_json
 from cmstoolbox.sitereadiness import site_list
+from pymongo.errors import ConnectionFailure
 
 from . import serverconfig
 
@@ -42,7 +46,6 @@ def cached_json(attribute, timeout=None):
         def function_wrapper(self, *args, **kwargs):
             """
             Executes the :py:class:`WorkflowInfo` function
-
             :returns: Output of the originally decorated function
             :rtype: dict
             """
@@ -53,20 +56,87 @@ def cached_json(attribute, timeout=None):
 
             check_var = self.cache.get(attribute)
 
+            def get_db_connection():
+                
+                client = MongoClient(
+                    'mongodb://'
+                    +serverconfig.get_db()['username']
+                    +':'
+                    +serverconfig.get_db()['password']
+                    +'@'
+                    +serverconfig.get_db()['server']
+                    +':'
+                    +str(serverconfig.get_db()['port'])
+                    +'/'
+                    +serverconfig.get_db()['name']
+                )                    
+                
+                try:
+                    client.admin.command('ismaster')
+                except ConnectionFailure:
+                    raise Exception("Couldn't connect DB")
+                
+                db = client[
+                    serverconfig.get_db()['name']
+                ]
+
+                return db;
+
+            # This is slow, avoid calling again
+            db = get_db_connection()
+            
             if check_var is None:
+
                 file_name = self.cache_filename(attribute)
                 if os.path.exists(file_name) and \
                         (tmout is None or time.time() - tmout < os.stat(file_name).st_mtime):
                     try:
+
+                        name = file_name.strip(str(self.cache_dir)+"/")
+                        name = name.strip("cache.js")
+
+                        print(name)
+                        
+                        start = time.time()
+                        json_doc = db.cache.find_one({"name":name})
+                        #print(json_doc)
+                        #check_var = json.load(json_doc.content)
+                        print("DB Time(s)", time.time() - start )
+                       
+                        start = time.time()
                         with open(file_name, 'r') as cache_file:
                             check_var = json.load(cache_file)
+                        print("JSON File Time(s)",time.time()-start)
+                            
                     except ValueError:
                         print 'JSON file no good. Deleting %s. Try again later.' % file_name
                         os.remove(file_name)
 
                 # If still None, call the wrapped function
                 if check_var is None:
+                    
+                    print("Retreiving from API")
+                    start = time.time()
                     check_var = func(self, *args, **kwargs)
+                    print(sys.getsizeof(check_var),"Bytes Retrieved, Time(s):", time.time() - start)
+
+                    # The JSON coming from API will be held
+                    # as a string in a JSON document
+                    
+                    name = file_name.strip(str(self.cache_dir)+"/")
+                    name = name.strip("cache.js")
+                    
+                    json_doc = {
+                        'name' : name,
+                        'content' : json.dumps(check_var)
+                        # Timestamp not needed
+                        # see: ObjectId.getTimestamp()
+                    }
+
+                    inserted_id = db.cache.insert(json_doc)
+                    
+                    print(name, "Inserted", inserted_id)
+
                     with open(file_name, 'w') as cache_file:
                         json.dump(check_var, cache_file)
 
